@@ -95,6 +95,11 @@ function SlashCommands.setup_completion(bufnr)
     vim.api.nvim_create_autocmd("TextChangedI", {
         buffer = bufnr,
         callback = function()
+            -- Don't re-trigger if completion menu is already visible
+            if vim.fn.pumvisible() == 1 then
+                return
+            end
+
             local commands = States.getSlashCommands()
             if #commands == 0 then
                 return

@@ -2323,4 +2323,153 @@ describe("ACPClient", function()
             assert.equal(nil, message.body)
         end)
     end)
+
+    describe("Kiro notifications", function()
+        local original_schedule = vim.schedule
+
+        before_each(function()
+            -- __with_subscriber uses vim.schedule; run synchronously in tests
+            --- @diagnostic disable-next-line: duplicate-set-field
+            vim.schedule = function(fn)
+                fn()
+            end
+        end)
+
+        after_each(function()
+            vim.schedule = original_schedule
+        end)
+
+        --- @param client agentic.acp.ACPClient
+        --- @param session_id string
+        --- @return table captured Captured session updates
+        local function subscribe_capture(client, session_id)
+            local captured = { updates = {} }
+            --- @type agentic.acp.ClientHandlers
+            local handlers = {
+                on_session_update = function(update)
+                    table.insert(captured.updates, update)
+                end,
+                on_request_permission = function() end,
+                on_error = function() end,
+                on_tool_call = function() end,
+                on_tool_call_update = function() end,
+            }
+            client:_subscribe(session_id, handlers)
+            return captured
+        end
+
+        it(
+            "routes '_kiro.dev/commands/available' to subscriber as available_commands_update",
+            function()
+                local client = create_ready_client()
+                local captured = subscribe_capture(client, "sid-kiro")
+
+                assert.is_not_nil(captured_on_message)
+                --- @cast captured_on_message fun(message: agentic.acp.ResponseRaw)
+                captured_on_message({
+                    jsonrpc = "2.0",
+                    method = "_kiro.dev/commands/available",
+                    params = {
+                        sessionId = "sid-kiro",
+                        availableCommands = {
+                            { name = "help", description = "Show help" },
+                            { name = "compact", description = "Compact" },
+                        },
+                    },
+                })
+
+                assert.equal(1, #captured.updates)
+                local update = captured.updates[1]
+                assert.equal("available_commands_update", update.sessionUpdate)
+                assert.equal(2, #update.availableCommands)
+                assert.equal("help", update.availableCommands[1].name)
+            end
+        )
+
+        it(
+            "ignores '_kiro.dev/commands/available' with missing sessionId",
+            function()
+                local client = create_ready_client()
+                local captured = subscribe_capture(client, "sid-kiro")
+
+                assert.is_not_nil(captured_on_message)
+                --- @cast captured_on_message fun(message: agentic.acp.ResponseRaw)
+                captured_on_message({
+                    jsonrpc = "2.0",
+                    method = "_kiro.dev/commands/available",
+                    params = {
+                        availableCommands = {
+                            { name = "help", description = "Show help" },
+                        },
+                    },
+                })
+
+                assert.equal(0, #captured.updates)
+                -- Should not emit a user-facing warning
+                assert.equal(0, logger_notify_stub.call_count)
+            end
+        )
+
+        it(
+            "silently ignores other '_kiro.dev/*' notifications without warning",
+            function()
+                local client = create_ready_client()
+                local captured = subscribe_capture(client, "sid-kiro")
+
+                local kiro_methods = {
+                    "_kiro.dev/mcp/server_initialized",
+                    "_kiro.dev/metadata",
+                    "_kiro.dev/subagent/list_update",
+                    "_kiro.dev/compaction/status",
+                    "_kiro.dev/clear/status",
+                }
+
+                assert.is_not_nil(captured_on_message)
+                --- @cast captured_on_message fun(message: agentic.acp.ResponseRaw)
+                for _, method in ipairs(kiro_methods) do
+                    captured_on_message({
+                        jsonrpc = "2.0",
+                        method = method,
+                        params = { sessionId = "sid-kiro" },
+                    })
+                end
+
+                assert.equal(0, #captured.updates)
+                assert.equal(0, logger_notify_stub.call_count)
+            end
+        )
+
+        it("silently ignores '_session/terminate' notification", function()
+            local client = create_ready_client()
+            subscribe_capture(client, "sid-kiro")
+
+            assert.is_not_nil(captured_on_message)
+            --- @cast captured_on_message fun(message: agentic.acp.ResponseRaw)
+            captured_on_message({
+                jsonrpc = "2.0",
+                method = "_session/terminate",
+                params = { sessionId = "sid-kiro" },
+            })
+
+            assert.equal(0, logger_notify_stub.call_count)
+        end)
+
+        it(
+            "still warns on truly unknown non-extension notifications",
+            function()
+                local client = create_ready_client()
+                subscribe_capture(client, "sid-kiro")
+
+                assert.is_not_nil(captured_on_message)
+                --- @cast captured_on_message fun(message: agentic.acp.ResponseRaw)
+                captured_on_message({
+                    jsonrpc = "2.0",
+                    method = "unknown/method",
+                    params = {},
+                })
+
+                assert.spy(logger_notify_stub).was.called(1)
+            end
+        )
+    end)
 end)

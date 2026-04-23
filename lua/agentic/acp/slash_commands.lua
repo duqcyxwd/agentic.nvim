@@ -26,19 +26,27 @@ function SlashCommands.setCommands(bufnr, available_commands)
     local has_new_command = false
 
     for _, cmd in ipairs(available_commands) do
+        local name = cmd.name
+        -- Kiro sends names with "/" prefix (e.g. "/agent"); strip it
+        -- since the completion starts after the "/" typed by the user.
+        if name and name:sub(1, 1) == "/" then
+            name = name:sub(2)
+        end
+
         if
-            cmd.name
+            name
+            and name ~= ""
             and cmd.description
-            and not cmd.name:match("%s")
-            and cmd.name ~= "clear"
+            and not name:match("%s")
+            and name ~= "clear"
         then
-            if cmd.name == "new" then
+            if name == "new" then
                 has_new_command = true
             end
 
             --- @type agentic.acp.CompletionItem
             local completion_item = {
-                word = cmd.name,
+                word = name,
                 menu = cmd.description,
                 info = cmd.description,
                 kind = "/",

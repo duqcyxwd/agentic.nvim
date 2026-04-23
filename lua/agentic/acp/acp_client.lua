@@ -449,6 +449,14 @@ function ACPClient:_handle_notification(message_id, method, params)
         Logger.debug(
             string.format("Received '%s' notification, ignoring it", method)
         )
+    elseif type(method) == "string" and method:sub(1, 10) == "_kiro.dev/" then
+        self:__handle_kiro_notification(method, params)
+    elseif method == "_session/terminate" then
+        -- Kiro subagent session termination. No per-session bookkeeping
+        -- needed here — subscribers are cleaned up via cancel_session.
+        Logger.debug(
+            string.format("Received '%s' notification, ignoring it", method)
+        )
     else
         self:__handle_unknown_method(message_id, method)
     end
@@ -488,6 +496,51 @@ function ACPClient:__handle_unknown_method(message_id, method)
             message_id,
             JSONRPC_METHOD_NOT_FOUND,
             "Method not found"
+        )
+    end
+end
+
+--- Handle Kiro-specific ACP extension notifications (`_kiro.dev/*`).
+--- These are optional enhancements per the Kiro ACP spec — clients that
+--- don't support them can safely ignore them.
+--- See: https://kiro.dev/docs/cli/acp/#kiro-extensions
+--- @protected
+--- @param method string
+--- @param params table|nil
+function ACPClient:__handle_kiro_notification(method, params)
+    if method == "_kiro.dev/commands/available" then
+        -- Route Kiro's slash command list through the standard
+        -- available_commands_update session update pipeline so existing
+        -- subscribers pick it up with no extra wiring.
+        local session_id = params and params.sessionId
+        -- Kiro sends `commands`, ACP standard uses `availableCommands`
+        local available_commands = params
+            and (params.availableCommands or params.commands)
+
+        if not session_id or type(available_commands) ~= "table" then
+            Logger.debug(
+                "Received '_kiro.dev/commands/available' with missing fields, ignoring. params:",
+                vim.inspect(params)
+            )
+            return
+        end
+
+        --- @type agentic.acp.AvailableCommandsUpdate
+        local update = {
+            sessionUpdate = "available_commands_update",
+            availableCommands = available_commands,
+        }
+
+        self:__with_subscriber(session_id, function(subscriber)
+            subscriber.on_session_update(update)
+        end)
+    else
+        -- Other Kiro extensions (mcp/server_initialized, metadata,
+        -- subagent/list_update, compaction/status, clear/status, etc.)
+        -- are purely informational for now. Log at debug level so they
+        -- don't flood the user with notify warnings.
+        Logger.debug(
+            string.format("Received Kiro extension '%s', ignoring it", method)
         )
     end
 end

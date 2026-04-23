@@ -114,3 +114,68 @@ outstanding requests with no double-send.
 Regressions in
 `lua/agentic/acp/acp_client.test.lua::"__handle_request_permission concurrency"`,
 notably `"answers two outstanding requests in reverse order"`.
+
+## Tool call quirk fallbacks
+
+- **`rawInput` fallback** (OpenCode): when `content` is missing for `edit` kind
+  tool calls, builds diff from `rawInput.new_string`/`rawInput.newString` fields
+- **`locations` fallback**: extracts `file_path` from `update.locations[0].path`
+  when not in `rawInput`
+- **Unknown kinds**: logs a warning for unrecognized `kind` values so users
+  report them as issues
+
+To handle a new provider quirk, add the fallback logic in
+`__build_tool_call_message` with a comment explaining which provider needs it.
+
+## Kiro ACP extensions (`_kiro.dev/*`)
+
+Kiro CLI emits extension notifications prefixed with `_kiro.dev/` per the ACP
+spec (see https://kiro.dev/docs/cli/acp/#kiro-extensions). These are optional;
+clients that don't understand them can safely ignore them.
+
+`_handle_notification` dispatches any method matching `_kiro.dev/*` to
+`__handle_kiro_notification`. Current behaviour:
+
+| Method                             | Handling                                                                     |
+| ---------------------------------- | ---------------------------------------------------------------------------- |
+| `_kiro.dev/commands/available`     | Reshaped into an `available_commands_update` and forwarded to the subscriber |
+| `_kiro.dev/mcp/server_initialized` | Debug-logged, no UI surface yet                                              |
+| `_kiro.dev/metadata`               | Debug-logged                                                                 |
+| `_kiro.dev/subagent/list_update`   | Debug-logged                                                                 |
+| `_kiro.dev/compaction/status`      | Debug-logged                                                                 |
+| `_kiro.dev/clear/status`           | Debug-logged                                                                 |
+| `_session/terminate`               | Debug-logged (subagent teardown, no client-side bookkeeping needed)          |
+
+Adding real handling for a new `_kiro.dev/*` extension means extending
+`__handle_kiro_notification` and, if the update has a matching ACP session update
+type, reshaping it to that type so existing subscriber code picks it up — same
+pattern used for `_kiro.dev/commands/available`.
+
+## Permission flow (interleaved with tool calls)
+
+```
+Provider sends "session/request_permission"
+  -> SessionManager: opens diff preview (if the request carries a diff)
+  -> PermissionManager:add_request(request, callback)
+     -> Queues request (sequential — one prompt at a time)
+     -> Renders permission buttons in chat buffer
+     -> Sets up buffer-local keymaps (1,2,3,4)
+  -> User presses key
+     -> Sends result back to provider via callback
+     -> Clears diff preview
+     -> Dequeues next permission if any
+```
+
+## Protected methods in ACPClient
+
+These protected methods can be overridden by subclasses if a future provider
+requires it, but currently all providers use the default implementations:
+
+| Method                        | Behavior                                  |
+| ----------------------------- | ----------------------------------------- |
+| `__handle_tool_call`          | Builds ToolCallBlock, notifies subscriber |
+| `__build_tool_call_message`   | Parses ACP fields + quirk fallbacks       |
+| `__handle_tool_call_update`   | Builds partial, notifies subscriber       |
+| `__handle_request_permission` | Sends result back to provider             |
+| `__handle_session_update`     | Routes by `sessionUpdate` type            |
+
